@@ -1,0 +1,58 @@
+
+{
+  "application_extension_version": 1,
+  "module_id": "org.3mm.terminal",
+  "version": "1.0.0",
+  "service": {
+    "artifact": "service/three_mm_terminal-1.0.0-py3-none-any.whl",
+    "artifact_sha256": "305e018fbe0e405595f8545bcbfc5cacc51b28bb485213db4db8e5ef69d50c55",
+    "entrypoint": "terminal.service:create_service",
+    "health_operation_id": "health"
+  },
+  "permissions": [],
+  "operations": [
+    {
+      "operation_id": "health",
+      "kind": "query",
+      "audiences": [
+        "internal"
+      ],
+      "idempotency": "forbidden",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route_id": "terminal",
+      "entrypoint_id": "terminal",
+      "audience": "administrator",
+      "layout": "application",
+      "order": 10
+    }
+  ],
+  "event_subscriptions": [],
+  "connectors": [],
+  "jobs": [],
+  "storage": {
+    "schema_revision": "0001",
+    "migration_entrypoint": "terminal.migrations:get_migrations",
+    "classifications": [
+      "private"
+    ],
+    "contains_personal_data": false
+  }
+}

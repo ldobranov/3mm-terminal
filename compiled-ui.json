@@ -1,0 +1,20 @@
+
+{
+  "compiled_ui_version": 1,
+  "module_id": "org.3mm.terminal",
+  "version": "1.0.0",
+  "entrypoints": [
+    {
+      "entrypoint_id": "terminal",
+      "kind": "route",
+      "source": "source/frontend/Terminal.vue",
+      "route": "/terminal",
+      "label": {
+        "en": "Terminal",
+        "translations": {
+          "bg": "Терминал"
+        }
+      }
+    }
+  ]
+}

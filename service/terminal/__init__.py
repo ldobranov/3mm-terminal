@@ -1,0 +1,4 @@
+
+"""3mm Terminal application service."""
+
+__version__ = "1.0.0"
