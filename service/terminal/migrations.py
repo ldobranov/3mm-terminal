@@ -1,14 +1,13 @@
 
-"""Database migrations for 3mm Terminal.
+"""Initial storage migration for 3mm Terminal."""
 
-The initial version does not require application tables.
-Session state is managed by the M21 platform.
-"""
-
-from __future__ import annotations
+from three_mm_application_sdk import ApplicationMigration
 
 
-def get_migrations() -> list:
-    """Return application database migrations."""
-
-    return []
+def get_migrations():
+    return [
+        ApplicationMigration(
+            "0001",
+            lambda connection: None,
+        ),
+    ]

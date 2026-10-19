@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "service": {
     "artifact": "service/three_mm_terminal-1.0.0-py3-none-any.whl",
-    "artifact_sha256": "305e018fbe0e405595f8545bcbfc5cacc51b28bb485213db4db8e5ef69d50c55",
+    "artifact_sha256": "8cec663732d1b74186ad7dd7ab0f23d627c9109041cb5e68474b5bbc7dc76072",
     "entrypoint": "terminal.service:create_service",
     "health_operation_id": "health"
   },
