@@ -7,9 +7,25 @@
     "artifact": "service/three_mm_terminal-1.0.0-py3-none-any.whl",
     "artifact_sha256": "8cec663732d1b74186ad7dd7ab0f23d627c9109041cb5e68474b5bbc7dc76072",
     "entrypoint": "terminal.service:create_service",
+    "sdk_version": "1.3",
     "health_operation_id": "health"
   },
-  "permissions": [],
+  "permissions": [{
+    "permission_id": "terminal_use",
+    "label": {"en": "Use the reviewed terminal session", "translations": {"bg": "Използване на прегледаната терминална сесия"}},
+    "description": {"en": "Open only the exact M20-approved provider and device; no root or wildcard access."}
+  }],
+  "session_bindings": [{
+    "contract_version": 1,
+    "binding_id": "console",
+    "target_device_config_key": "SESSION_DEVICE_ID",
+    "provider_id": "org.3mm.terminal",
+    "capability_id": "org.3mm.terminal.shell",
+    "access_mode": "write",
+    "control_actions": ["resize"],
+    "required_permission": "terminal_use",
+    "options": {"cols": 80, "rows": 24}
+  }],
   "operations": [
     {
       "operation_id": "health",

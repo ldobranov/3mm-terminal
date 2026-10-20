@@ -53,6 +53,16 @@ Fleet and Cloud are optional.
 
 ## Development status
 
-Planning and initial project structure.
+The public M21 provider adapter and transport-neutral frontend adapter are under
+development. The provider now supports independent asynchronous output through
+the additive SDK `SessionOutputProvider` contract. Its PTY adapter operates on an
+already launched, unprivileged child supplied by the trusted platform runtime;
+it does not choose a transport, start a shell or establish OS isolation.
 
-No production terminal functionality is implemented yet.
+Disposable Linux integration tests exercise a real shell prompt, delayed output,
+resize, EOF and cleanup through the generic Agent host. Their authorization
+checker is a test adapter, not the production M20 grant connector.
+
+The production browser connector, current M20 authority/audit wiring and isolated
+process launcher are still pending. Connect remains disabled; this is not yet a
+production terminal or a completed Local/Fleet/Cloud acceptance.

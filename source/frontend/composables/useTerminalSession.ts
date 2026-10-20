@@ -1,6 +1,7 @@
 
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import type {
+  TerminalSession,
   TerminalTransport,
   TerminalSessionOptions,
 } from '../services/terminalTransport'
@@ -25,9 +26,19 @@ export function useTerminalSession(
   const status = ref<TerminalSessionStatus>('idle')
   const error = ref<string | null>(null)
   const sessionId = ref<string | null>(null)
+
+  // Session ownership must be reactive, but the session
+  // object itself must not be converted to a Vue proxy.
+  const activeSession = shallowRef<TerminalSession | null>(null)
+
+  // Track asynchronous cleanup reactively so reconnect
+  // becomes available only after cleanup has finished.
+  const pendingDisconnect = shallowRef<Promise<void> | null>(
+    null,
+  )
+
+  const disposed = ref(false)
   let operationId = 0
-  let disposed = false
-  let pendingDisconnect: Promise<void> | null = null
 
   const targets = ref<TerminalTarget[]>([
     {
@@ -39,10 +50,11 @@ export function useTerminalSession(
 
   const selectedTargetId = ref('local')
 
-  const selectedTarget = computed(() =>
-    targets.value.find(
-      target => target.id === selectedTargetId.value,
-    ) ?? null,
+  const selectedTarget = computed(
+    () =>
+      targets.value.find(
+        target => target.id === selectedTargetId.value,
+      ) ?? null,
   )
 
   const isConnected = computed(
@@ -57,19 +69,25 @@ export function useTerminalSession(
 
   const canConnect = computed(
     () =>
-      !disposed &&
+      !disposed.value &&
       transport !== null &&
+      activeSession.value === null &&
       sessionId.value === null &&
-      pendingDisconnect === null &&
+      pendingDisconnect.value === null &&
       selectedTarget.value !== null &&
-      (status.value === 'idle' ||
+      (
+        status.value === 'idle' ||
         status.value === 'disconnected' ||
-        status.value === 'error'),
+        status.value === 'error'
+      ),
   )
 
-  async function connect(cols: number, rows: number): Promise<void> {
+  async function connect(
+    cols: number,
+    rows: number,
+  ): Promise<void> {
     if (
-      disposed ||
+      disposed.value ||
       !transport ||
       !canConnect.value ||
       !selectedTarget.value
@@ -89,95 +107,118 @@ export function useTerminalSession(
     status.value = 'connecting'
 
     try {
-      const session = await transport.connect(options)
+      const newSession = await transport.connect(options)
 
-      if (disposed || currentOperation !== operationId) {
-        await transport.disconnect()
+      if (
+        disposed.value ||
+        currentOperation !== operationId
+      ) {
+        // This connection is no longer owned by us.
+        // Close this exact session, not the transport
+        // or any newer session.
+        try {
+          await newSession.disconnect()
+        } catch {
+          // Late cleanup is best-effort.
+        }
         return
       }
 
-      sessionId.value = session.sessionId
+      activeSession.value = newSession
+      sessionId.value = newSession.sessionId
       status.value = 'connected'
     } catch (cause) {
-      if (disposed || currentOperation !== operationId) {
+      if (
+        disposed.value ||
+        currentOperation !== operationId
+      ) {
         return
       }
 
+      activeSession.value = null
       sessionId.value = null
+
       error.value =
-        cause instanceof Error ? cause.message : 'Connection failed'
+        cause instanceof Error
+          ? cause.message
+          : 'Connection failed'
+
       status.value = 'error'
     }
   }
 
-  function closeTransport(): Promise<void> {
-    if (!transport) {
+  function disconnect(): Promise<void> {
+    if (disposed.value || !activeSession.value) {
       return Promise.resolve()
     }
 
-    if (pendingDisconnect) {
-      return pendingDisconnect
+    // Concurrent disconnect requests share one task.
+    if (pendingDisconnect.value) {
+      return pendingDisconnect.value
     }
 
-    let operation: Promise<void>
-
-    try {
-      operation = Promise.resolve(transport.disconnect())
-    } catch (cause) {
-      operation = Promise.reject(cause)
-    }
-
-    pendingDisconnect = operation
-
-    void operation.then(
-      () => {
-        if (pendingDisconnect === operation) {
-          pendingDisconnect = null
-        }
-      },
-      () => {
-        if (pendingDisconnect === operation) {
-          pendingDisconnect = null
-        }
-      },
-    )
-
-    return operation
-  }
-
-  async function disconnect(): Promise<void> {
-    if (disposed || !transport || !sessionId.value) {
-      return
-    }
-
-    const currentOperation = ++operationId
+    const ownedSession = activeSession.value
 
     status.value = 'disconnecting'
     error.value = null
 
-    try {
-      await closeTransport()
+    const task = (async (): Promise<void> => {
+      try {
+        await ownedSession.disconnect()
 
-      if (disposed || currentOperation !== operationId) {
-        return
+        if (
+          !disposed.value &&
+          activeSession.value === ownedSession
+        ) {
+          activeSession.value = null
+          sessionId.value = null
+          status.value = 'disconnected'
+          error.value = null
+        }
+      } catch (cause) {
+        if (
+          !disposed.value &&
+          activeSession.value === ownedSession
+        ) {
+          // The remote session might still exist.
+          // Retain ownership so cleanup can be retried.
+          error.value =
+            cause instanceof Error
+              ? cause.message
+              : 'Disconnect failed'
+
+          status.value = 'error'
+        }
       }
+    })()
 
-      sessionId.value = null
-      status.value = 'disconnected'
-      error.value = null
-    } catch (cause) {
-      if (disposed || currentOperation !== operationId) {
-        return
-      }
+    pendingDisconnect.value = task
 
-      error.value =
-        cause instanceof Error ? cause.message : 'Disconnect failed'
-      status.value = 'error'
-    }
+    // Release the cleanup lock once the task settles.
+    // The ref update also invalidates canConnect.
+    void task.then(
+      () => {
+        if (pendingDisconnect.value === task) {
+          pendingDisconnect.value = null
+        }
+      },
+      () => {
+        if (pendingDisconnect.value === task) {
+          pendingDisconnect.value = null
+        }
+      },
+    )
+
+    return task
   }
 
   function reset(): void {
-    if (sessionId.value || status.value === 'connecting') {
+    if (
+      disposed.value ||
+      activeSession.value !== null ||
+      status.value === 'connecting' ||
+      pendingDisconnect.value !== null
+    ) {
       return
     }
 
@@ -186,18 +227,35 @@ export function useTerminalSession(
   }
 
   function dispose(): void {
-    if (disposed) return
-
-    disposed = true
-    operationId++
-
-    if (transport && sessionId.value) {
-      void closeTransport().catch(() => {
-        // Cleanup is best-effort.
-      })
+    if (disposed.value) {
+      return
     }
 
+    disposed.value = true
+    operationId++
+
+    const ownedSession = activeSession.value
+
+    // If a disconnect is already in progress,
+    // do not invoke it for a second time.
+    if (
+      ownedSession &&
+      pendingDisconnect.value === null
+    ) {
+      try {
+        void Promise.resolve(
+          ownedSession.disconnect(),
+        ).catch(() => {
+          // Cleanup on disposal is best-effort.
+        })
+      } catch {
+        // Handle synchronous cleanup errors.
+      }
+    }
+
+    activeSession.value = null
     sessionId.value = null
+    error.value = null
     status.value = 'disconnected'
   }
 
@@ -205,12 +263,16 @@ export function useTerminalSession(
     status,
     error,
     sessionId,
+    activeSession,
+
     targets,
     selectedTargetId,
     selectedTarget,
+
     isConnected,
     isBusy,
     canConnect,
+
     connect,
     disconnect,
     reset,

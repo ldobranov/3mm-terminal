@@ -1,356 +1,282 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { useTerminalSession } from '../../source/frontend/composables/useTerminalSession'
-import type { TerminalTransport } from '../../source/frontend/services/terminalTransport'
+import type {
+  TerminalSession,
+  TerminalTransport,
+} from '../../source/frontend/services/terminalTransport'
+
+function createSession(sessionId: string): TerminalSession {
+  return {
+    sessionId,
+    write: vi.fn().mockResolvedValue(undefined),
+    resize: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn().mockResolvedValue(undefined),
+    onOutput: vi.fn().mockReturnValue(() => {}),
+    onExit: vi.fn().mockReturnValue(() => {}),
+  }
+}
+
+function createTransport(
+  connect: TerminalTransport['connect'],
+): TerminalTransport {
+  return { connect }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, resolve, reject }
+}
 
 describe('useTerminalSession', () => {
   it('starts disconnected without a transport', () => {
-    const session = useTerminalSession()
+    const terminal = useTerminalSession()
 
-    expect(session.status.value).toBe('idle')
-    expect(session.isConnected.value).toBe(false)
-    expect(session.canConnect.value).toBe(false)
-    expect(session.sessionId.value).toBeNull()
+    expect(terminal.status.value).toBe('idle')
+    expect(terminal.sessionId.value).toBeNull()
+    expect(terminal.isConnected.value).toBe(false)
+    expect(terminal.canConnect.value).toBe(false)
   })
 
   it('provides the local target by default', () => {
-    const session = useTerminalSession()
+    const terminal = useTerminalSession()
 
-    expect(session.targets.value).toEqual([
-      {
-        id: 'local',
-        label: 'Local',
-        kind: 'local',
-      },
+    expect(terminal.targets.value).toEqual([
+      { id: 'local', label: 'Local', kind: 'local' },
     ])
+    expect(terminal.selectedTarget.value?.id).toBe('local')
+  })
 
-    expect(session.selectedTarget.value?.id).toBe('local')
+  it('connects and owns the returned session', async () => {
+    const owned = createSession('session-1')
+    const connect = vi.fn().mockResolvedValue(owned)
+    const terminal = useTerminalSession(
+      createTransport(connect),
+    )
+
+    await terminal.connect(80, 24)
+
+    expect(connect).toHaveBeenCalledWith({
+      targetId: 'local',
+      cols: 80,
+      rows: 24,
+    })
+    expect(terminal.sessionId.value).toBe('session-1')
+    expect(terminal.status.value).toBe('connected')
+    expect(terminal.isConnected.value).toBe(true)
   })
 
   it('prevents concurrent connection attempts', async () => {
-    let resolveConnect!: (value: { sessionId: string }) => void
-
-    const connectPromise = new Promise<{ sessionId: string }>(
-      resolve => {
-        resolveConnect = resolve
-      },
+    const pending = deferred<TerminalSession>()
+    const connect = vi.fn().mockReturnValue(pending.promise)
+    const terminal = useTerminalSession(
+      createTransport(connect),
     )
 
-    const connectMock = vi.fn().mockReturnValue(connectPromise)
+    const first = terminal.connect(80, 24)
+    const second = terminal.connect(80, 24)
 
-    const transport: TerminalTransport = {
-      connect: connectMock,
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: vi.fn().mockResolvedValue(undefined),
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(terminal.status.value).toBe('connecting')
+    expect(terminal.isBusy.value).toBe(true)
 
-    const session = useTerminalSession(transport)
-
-    const firstAttempt = session.connect(80, 24)
-    const secondAttempt = session.connect(80, 24)
-
-    expect(connectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('connecting')
-    expect(session.isBusy.value).toBe(true)
-
-    resolveConnect({ sessionId: 'test-session-1' })
-
-    await Promise.all([firstAttempt, secondAttempt])
-
-    expect(session.status.value).toBe('connected')
-    expect(session.sessionId.value).toBe('test-session-1')
-    expect(session.isConnected.value).toBe(true)
-  })
-
-  it('closes a late connection after dispose', async () => {
-    let resolveConnect!: (value: { sessionId: string }) => void
-
-    const pendingConnect = new Promise<{ sessionId: string }>(
-      resolve => {
-        resolveConnect = resolve
-      },
-    )
-
-    const disconnectMock = vi.fn().mockResolvedValue(undefined)
-
-    const transport: TerminalTransport = {
-      connect: vi.fn().mockReturnValue(pendingConnect),
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    const attempt = session.connect(80, 24)
-
-    expect(session.status.value).toBe('connecting')
-
-    session.dispose()
-
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
-
-    resolveConnect({ sessionId: 'late-session' })
-    await attempt
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
-  })
-
-  it('does not disconnect twice when disposed during disconnect', async () => {
-    let resolveDisconnect!: () => void
-
-    const pendingDisconnect = new Promise<void>(resolve => {
-      resolveDisconnect = resolve
-    })
-
-    const disconnectMock = vi.fn().mockReturnValue(pendingDisconnect)
-
-    const transport: TerminalTransport = {
-      connect: vi.fn().mockResolvedValue({
-        sessionId: 'session-1',
-      }),
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    await session.connect(80, 24)
-
-    expect(session.status.value).toBe('connected')
-
-    const disconnectAttempt = session.disconnect()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-
-    session.dispose()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('disconnected')
-
-    resolveDisconnect()
-    await disconnectAttempt
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
-  })
-
-  it('handles concurrent disconnect requests safely', async () => {
-    let resolveDisconnect!: () => void
-
-    const pendingDisconnect = new Promise<void>(resolve => {
-      resolveDisconnect = resolve
-    })
-
-    const disconnectMock = vi.fn().mockReturnValue(pendingDisconnect)
-
-    const transport: TerminalTransport = {
-      connect: vi.fn().mockResolvedValue({
-        sessionId: 'session-1',
-      }),
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    await session.connect(80, 24)
-
-    const first = session.disconnect()
-    const second = session.disconnect()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-
-    resolveDisconnect()
-
+    pending.resolve(createSession('session-1'))
     await Promise.all([first, second])
 
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
+    expect(terminal.status.value).toBe('connected')
+    expect(terminal.sessionId.value).toBe('session-1')
   })
 
-  it('tracks disconnecting state until cleanup completes', async () => {
-    let resolveDisconnect!: () => void
-
-    const pendingDisconnect = new Promise<void>(resolve => {
-      resolveDisconnect = resolve
-    })
-
-    const transport: TerminalTransport = {
-      connect: vi.fn().mockResolvedValue({
-        sessionId: 'session-1',
-      }),
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: vi.fn().mockReturnValue(pendingDisconnect),
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    await session.connect(80, 24)
-
-    expect(session.status.value).toBe('connected')
-
-    const closing = session.disconnect()
-
-    expect(session.status.value).toBe('disconnecting')
-    expect(session.isBusy.value).toBe(true)
-    expect(session.isConnected.value).toBe(false)
-    expect(session.canConnect.value).toBe(false)
-    expect(session.sessionId.value).toBe('session-1')
-
-    resolveDisconnect()
-    await closing
-
-    expect(session.status.value).toBe('disconnected')
-    expect(session.isBusy.value).toBe(false)
-    expect(session.sessionId.value).toBeNull()
-    expect(session.canConnect.value).toBe(true)
-  })
-
-  it('blocks reconnect while disconnect is pending', async () => {
-    let resolveDisconnect!: () => void
-
-    const pendingDisconnect = new Promise<void>(resolve => {
-      resolveDisconnect = resolve
-    })
-
-    const connectMock = vi.fn()
-      .mockResolvedValueOnce({ sessionId: 'session-1' })
-      .mockResolvedValueOnce({ sessionId: 'session-2' })
-
-    const disconnectMock = vi.fn().mockReturnValue(pendingDisconnect)
-
-    const transport: TerminalTransport = {
-      connect: connectMock,
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    await session.connect(80, 24)
-
-    expect(session.sessionId.value).toBe('session-1')
-
-    const closing = session.disconnect()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-
-    // A new session must not start while the old one is closing.
-    await session.connect(80, 24)
-
-    expect(connectMock).toHaveBeenCalledTimes(1)
-
-    resolveDisconnect()
-    await closing
-
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
-
-    // Reconnecting is allowed after cleanup completes.
-    await session.connect(80, 24)
-
-    expect(connectMock).toHaveBeenCalledTimes(2)
-    expect(session.sessionId.value).toBe('session-2')
-  })
-
-  it('retries disconnect after a cleanup failure', async () => {
-    const disconnectMock = vi.fn()
-      .mockRejectedValueOnce(new Error('Temporary cleanup failure'))
-      .mockResolvedValueOnce(undefined)
-
-    const transport: TerminalTransport = {
-      connect: vi.fn().mockResolvedValue({
-        sessionId: 'session-1',
-      }),
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
-
-    const session = useTerminalSession(transport)
-
-    await session.connect(80, 24)
-
-    // First cleanup attempt fails.
-    await session.disconnect()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(1)
-    expect(session.status.value).toBe('error')
-    expect(session.sessionId.value).toBe('session-1')
-    expect(session.canConnect.value).toBe(false)
-
-    // Retry closing the same session.
-    await session.disconnect()
-
-    expect(disconnectMock).toHaveBeenCalledTimes(2)
-    expect(session.status.value).toBe('disconnected')
-    expect(session.sessionId.value).toBeNull()
-    expect(session.canConnect.value).toBe(true)
-  })
-
-  it('blocks reconnect after a failed disconnect', async () => {
-    const connectMock = vi.fn().mockResolvedValue({
-      sessionId: 'session-1',
-    })
-
-    const disconnectMock = vi.fn().mockRejectedValue(
-      new Error('Session cleanup failed'),
+  it('closes only a late session after disposal', async () => {
+    const pending = deferred<TerminalSession>()
+    const late = createSession('late-session')
+    const terminal = useTerminalSession(
+      createTransport(
+        vi.fn().mockReturnValue(pending.promise),
+      ),
     )
 
-    const transport: TerminalTransport = {
-      connect: connectMock,
-      write: vi.fn().mockResolvedValue(undefined),
-      resize: vi.fn().mockResolvedValue(undefined),
-      disconnect: disconnectMock,
-      onOutput: vi.fn().mockReturnValue(() => {}),
-      onExit: vi.fn().mockReturnValue(() => {}),
-    }
+    const attempt = terminal.connect(80, 24)
+    terminal.dispose()
 
-    const session = useTerminalSession(transport)
+    pending.resolve(late)
+    await attempt
 
-    await session.connect(80, 24)
-
-    expect(session.status.value).toBe('connected')
-
-    await session.disconnect()
-
-    expect(session.status.value).toBe('error')
-    expect(session.error.value).toBe('Session cleanup failed')
-
-    // The session may still exist on the server.
-    expect(session.sessionId.value).toBe('session-1')
-
-    // Reconnection must remain blocked.
-    expect(session.canConnect.value).toBe(false)
-
-    await session.connect(80, 24)
-
-    expect(connectMock).toHaveBeenCalledTimes(1)
+    expect(late.disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.sessionId.value).toBeNull()
+    expect(terminal.status.value).toBe('disconnected')
   })
 
+  it('disconnects the owned session', async () => {
+    const owned = createSession('session-1')
+    const terminal = useTerminalSession(
+      createTransport(vi.fn().mockResolvedValue(owned)),
+    )
+
+    await terminal.connect(80, 24)
+    await terminal.disconnect()
+
+    expect(owned.disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.sessionId.value).toBeNull()
+    expect(terminal.status.value).toBe('disconnected')
+    expect(terminal.canConnect.value).toBe(true)
+  })
+
+  it('shares one cleanup across concurrent disconnects', async () => {
+    const pending = deferred<void>()
+    const owned = createSession('session-1')
+    const disconnect = vi.fn().mockReturnValue(pending.promise)
+    owned.disconnect = disconnect
+
+    const terminal = useTerminalSession(
+      createTransport(vi.fn().mockResolvedValue(owned)),
+    )
+
+    await terminal.connect(80, 24)
+
+    const first = terminal.disconnect()
+    const second = terminal.disconnect()
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.status.value).toBe('disconnecting')
+
+    pending.resolve()
+    await Promise.all([first, second])
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.status.value).toBe('disconnected')
+  })
+
+  it('blocks reconnect while cleanup is pending', async () => {
+    const pending = deferred<void>()
+    const firstSession = createSession('session-1')
+    const secondSession = createSession('session-2')
+
+    firstSession.disconnect = vi.fn().mockReturnValue(
+      pending.promise,
+    )
+
+    const connect = vi.fn()
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(secondSession)
+
+    const terminal = useTerminalSession(
+      createTransport(connect),
+    )
+
+    await terminal.connect(80, 24)
+
+    const closing = terminal.disconnect()
+    await terminal.connect(80, 24)
+
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(terminal.canConnect.value).toBe(false)
+
+    pending.resolve()
+    await closing
+
+    await terminal.connect(80, 24)
+
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(terminal.sessionId.value).toBe('session-2')
+    expect(firstSession.disconnect).toHaveBeenCalledTimes(1)
+    expect(secondSession.disconnect).not.toHaveBeenCalled()
+  })
+
+  it('keeps ownership after failed cleanup for retry', async () => {
+    const owned = createSession('session-1')
+    const disconnect = vi.fn()
+      .mockRejectedValueOnce(new Error('Cleanup failed'))
+      .mockResolvedValueOnce(undefined)
+
+    owned.disconnect = disconnect
+
+    const terminal = useTerminalSession(
+      createTransport(vi.fn().mockResolvedValue(owned)),
+    )
+
+    await terminal.connect(80, 24)
+    await terminal.disconnect()
+
+    expect(terminal.status.value).toBe('error')
+    expect(terminal.error.value).toBe('Cleanup failed')
+    expect(terminal.sessionId.value).toBe('session-1')
+    expect(terminal.canConnect.value).toBe(false)
+
+    await terminal.disconnect()
+
+    expect(disconnect).toHaveBeenCalledTimes(2)
+    expect(terminal.sessionId.value).toBeNull()
+    expect(terminal.status.value).toBe('disconnected')
+  })
+
+  it('disposal does not duplicate pending cleanup', async () => {
+    const pending = deferred<void>()
+    const owned = createSession('session-1')
+    const disconnect = vi.fn().mockReturnValue(pending.promise)
+    owned.disconnect = disconnect
+
+    const terminal = useTerminalSession(
+      createTransport(vi.fn().mockResolvedValue(owned)),
+    )
+
+    await terminal.connect(80, 24)
+
+    const closing = terminal.disconnect()
+    terminal.dispose()
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.sessionId.value).toBeNull()
+
+    pending.resolve()
+    await closing
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.status.value).toBe('disconnected')
+  })
+
+  it('disposal closes an active owned session', async () => {
+    const owned = createSession('session-1')
+    const terminal = useTerminalSession(
+      createTransport(vi.fn().mockResolvedValue(owned)),
+    )
+
+    await terminal.connect(80, 24)
+    terminal.dispose()
+    terminal.dispose()
+
+    expect(owned.disconnect).toHaveBeenCalledTimes(1)
+    expect(terminal.canConnect.value).toBe(false)
+    expect(terminal.sessionId.value).toBeNull()
+  })
+
+  it('reports connection failure and permits retry', async () => {
+    const owned = createSession('session-2')
+    const connect = vi.fn()
+      .mockRejectedValueOnce(new Error('Unavailable'))
+      .mockResolvedValueOnce(owned)
+
+    const terminal = useTerminalSession(
+      createTransport(connect),
+    )
+
+    await terminal.connect(80, 24)
+
+    expect(terminal.status.value).toBe('error')
+    expect(terminal.error.value).toBe('Unavailable')
+    expect(terminal.canConnect.value).toBe(true)
+
+    await terminal.connect(80, 24)
+
+    expect(terminal.status.value).toBe('connected')
+    expect(terminal.sessionId.value).toBe('session-2')
+    expect(terminal.error.value).toBeNull()
+  })
 })

@@ -23,12 +23,13 @@
   },
   "capabilities": {
     "provides": [],
-    "consumes": []
+    "consumes": ["org.3mm.terminal.shell"]
   },
   "permissions": [
     "data.read",
     "data.write",
-    "process.spawn"
+    "process.spawn",
+    "sessions.open"
   ],
   "dependencies": {},
   "conflicts": [],
@@ -36,6 +37,11 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "SESSION_DEVICE_ID": {
+        "type": "string",
+        "pattern": "^dev_[0-9a-f]{32}$",
+        "description": "Explicit saved device for the reviewed session binding; no automatic local/SSH fallback."
+      },
       "idle_timeout_seconds": {
         "type": "integer",
         "minimum": 60,

@@ -5,17 +5,14 @@ export interface TerminalSessionOptions {
   rows: number
 }
 
-export interface TerminalSessionInfo {
-  sessionId: string
-}
-
 export type TerminalOutputHandler = (data: string) => void
-export type TerminalExitHandler = (exitCode: number | null) => void
 
-export interface TerminalTransport {
-  connect(
-    options: TerminalSessionOptions,
-  ): Promise<TerminalSessionInfo>
+export type TerminalExitHandler = (
+  exitCode: number | null,
+) => void
+
+export interface TerminalSession {
+  readonly sessionId: string
 
   write(data: string): Promise<void>
 
@@ -26,4 +23,10 @@ export interface TerminalTransport {
   onOutput(handler: TerminalOutputHandler): () => void
 
   onExit(handler: TerminalExitHandler): () => void
+}
+
+export interface TerminalTransport {
+  connect(
+    options: TerminalSessionOptions,
+  ): Promise<TerminalSession>
 }

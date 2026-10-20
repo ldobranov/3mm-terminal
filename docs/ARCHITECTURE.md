@@ -11,6 +11,12 @@
 6. No custom authentication or device registry.
 7. No direct exposure of unrestricted Agent APIs.
 
+Local, Fleet and Cloud are routing contexts of ONE extension and ONE public
+M21 session contract, not separate terminal implementations. The extension
+selects an authorized target; the platform selects its transport. Local-first
+verification must not introduce a separate local API or a Fleet/Cloud-specific
+client inside the terminal.
+
 ## Components
 
 ### Frontend
@@ -107,3 +113,19 @@ M21:
 
 Actual M21 versions and API names must be verified
 before integration. No assumed API is implemented.
+
+## Current SDK integration boundary — 2026-10-20
+
+The provider uses the additive SDK 1.3 `SessionOutputProvider.read_output` method
+for independent output, with `None` meaning EOF. Existing receive/control/close
+and `interactive-session.v1` frames are preserved. Platform-owned output pumps
+await each bounded send, require an explicit current-authority checker and stop
+on denial, disconnect or failed cleanup. No terminal name is added to Core.
+
+The PTY adapter only owns I/O and cleanup for an already launched child; it
+refuses root attachment and does not implement a shell launcher or isolation.
+The test harness launches a temporary unprivileged shell with a scrubbed
+environment; these tests do NOT prove filesystem/cgroup isolation or M20 rights.
+Production registration, exact reviewed resource grants, browser/Agent connector
+and isolation must be connected before enabling the terminal. The prototype
+WebSocket router is still not a production session-authority boundary.
