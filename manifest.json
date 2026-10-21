@@ -1,9 +1,8 @@
-
 {
   "manifest_version": 2,
   "module_id": "org.3mm.terminal",
   "name": "3mm Terminal",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Interactive Linux terminal extension for local and authorized remote sessions.",
   "runtimes": [
     "core",
@@ -15,15 +14,19 @@
   },
   "compatibility": {
     "protocol": "1.0",
-    "core": ">=0.1.0",
+    "core": ">=0.3.0",
     "agent": ">=0.1.0",
     "architectures": [
       "any"
     ]
   },
   "capabilities": {
-    "provides": [],
-    "consumes": ["org.3mm.terminal.shell"]
+    "provides": [
+      "org.3mm.terminal.shell"
+    ],
+    "consumes": [
+      "org.3mm.terminal.shell"
+    ]
   },
   "permissions": [
     "data.read",

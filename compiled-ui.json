@@ -1,8 +1,7 @@
-
 {
   "compiled_ui_version": 1,
   "module_id": "org.3mm.terminal",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "entrypoints": [
     {
       "entrypoint_id": "terminal",

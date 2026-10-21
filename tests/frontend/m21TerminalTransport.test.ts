@@ -206,7 +206,7 @@ describe('M21TerminalTransport', () => {
 
     expect(calls.length).toBeGreaterThan(1)
 
-    const MAX_PAYLOAD_BYTES = 65_536 - 258
+    const MAX_PAYLOAD_BYTES = 16_384
 
     for (const [sessionId, payload] of calls) {
       expect(sessionId).toBe(SESSION_ID)
@@ -230,6 +230,33 @@ describe('M21TerminalTransport', () => {
     }
 
     expect(new TextDecoder().decode(merged)).toBe(text)
+  })
+
+  it.each([16_384, 16_385, 17_000])('respects the local worker input bound for %i bytes', async size => {
+    const { bridge } = createTestBridge()
+    vi.mocked(bridge.sendData).mockImplementation(async (_sessionId, payload) => {
+      if (payload.byteLength > 16_384) throw new Error('Local worker input limit')
+    })
+    const session = await new M21TerminalTransport(bridge).connect({ targetId: 'local', cols: 80, rows: 24 })
+    await session.write('A'.repeat(size))
+    const calls = vi.mocked(bridge.sendData).mock.calls
+    expect(calls).toHaveLength(Math.ceil(size / 16_384))
+    expect(calls.reduce((sum, [, data]) => sum + data.byteLength, 0)).toBe(size)
+  })
+
+  it('preserves UTF-8 across the worker frame boundary without resending bytes', async () => {
+    const { bridge } = createTestBridge()
+    const session = await new M21TerminalTransport(bridge).connect({ targetId: 'local', cols: 80, rows: 24 })
+    const text = 'A'.repeat(16_383) + '🙂Готово'.repeat(3_000)
+    await session.write(text)
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    let decoded = ''
+    for (const [, payload] of vi.mocked(bridge.sendData).mock.calls) {
+      expect(payload.byteLength).toBeLessThanOrEqual(16_384)
+      decoded += decoder.decode(payload, { stream: true })
+    }
+    decoded += decoder.decode()
+    expect(decoded).toBe(text)
   })
 
 

@@ -7,7 +7,9 @@ import type {
 
 const PROVIDER_ID = 'org.3mm.terminal'
 const CAPABILITY_ID = 'org.3mm.terminal.shell'
-const MAX_M21_PAYLOAD_BYTES = 65_536 - 258
+// The local isolated worker accepts 16 KiB, below the M21 envelope ceiling.
+// Chunk the byte stream at the narrowest supported input boundary.
+const MAX_M21_PAYLOAD_BYTES = 16_384
 const MAX_INITIAL_OUTPUT_BYTES = 64 * 1024
 
 export interface M21Target {

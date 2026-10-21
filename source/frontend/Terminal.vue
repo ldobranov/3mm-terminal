@@ -4,6 +4,8 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useApplicationHost } from '@3mm/application-ui/v1'
 import { M21TerminalTransport } from './services/m21TerminalTransport'
 import { useTerminalSession } from './composables/useTerminalSession'
+import type { TerminalSession } from './services/terminalTransport'
+import { Terminal as XTerm, FitAddon } from './vendor/xterm-vendor.js'
 
 const bridge = useApplicationHost().sessions
 const controller = useTerminalSession(bridge ? new M21TerminalTransport(bridge) : null)
@@ -19,7 +21,14 @@ const {
 } = controller
 targets.value = []
 selectedTargetId.value = ''
-const output = ref('')
+const terminalElement = ref<HTMLElement | null>(null)
+let terminal: XTerm | null = null
+let fitAddon: FitAddon | null = null
+let keyboardSubscription: { dispose(): void } | null = null
+let resizeSubscription: { dispose(): void } | null = null
+let resizeObserver: ResizeObserver | null = null
+let resizeQueue: Promise<void> = Promise.resolve()
+let lastSize: { session: TerminalSession; cols: number; rows: number } | null = null
 const input = ref('')
 const discoveryError = ref('')
 const discovering = ref(false)
@@ -27,6 +36,26 @@ let disposed = false
 let removeOutput = () => {}
 let removeExit = () => {}
 const available = ref<string[]>([])
+
+function synchronizeSize(cols: number, rows: number): Promise<void> {
+  const session = controller.activeSession.value
+  if (disposed || !isConnected.value || !session) return Promise.resolve()
+  if (lastSize?.session === session && lastSize.cols === cols && lastSize.rows === rows) {
+    return resizeQueue
+  }
+  lastSize = { session, cols, rows }
+  // Serialize controls so a slow earlier size cannot overwrite a newer one.
+  const operation = resizeQueue.then(async () => {
+    if (disposed || !isConnected.value || controller.activeSession.value !== session) return
+    await session.resize(cols, rows)
+  }).catch(async () => {
+    if (disposed || controller.activeSession.value !== session) return
+    discoveryError.value = 'Resize outcome is unconfirmed. It was not resent.'
+    await controller.disconnect()
+  })
+  resizeQueue = operation
+  return operation
+}
 
 async function refreshTargets() {
   if (!bridge || discovering.value || isConnected.value || isBusy.value) return
@@ -43,12 +72,23 @@ async function refreshTargets() {
 }
 async function connect() {
   if (!canConnect.value) return
-  removeOutput(); removeExit(); output.value = ''
+  removeOutput()
+  removeExit()
+  terminal?.write('\x1b[2J\x1b[H')
   await controller.connect(80, 24)
   const session = controller.activeSession.value
   if (!session || disposed) return
-  removeOutput = session.onOutput(data => { output.value = (output.value + data).slice(-65536) })
-  removeExit = session.onExit(() => { void controller.disconnect() })
+  removeOutput = session.onOutput((data) => {
+    terminal?.write(data)
+  })
+  removeExit = session.onExit(() => {
+    void controller.disconnect()
+    terminal?.focus()
+  })
+  // Keep the reviewed opening options unchanged. The current renderer size
+  // goes through the separately approved resize control after connection.
+  fitAddon?.fit()
+  if (terminal) await synchronizeSize(terminal.cols, terminal.rows)
 }
 async function sendInput() {
   const session = controller.activeSession.value
@@ -58,8 +98,80 @@ async function sendInput() {
   try { await session.write(text + '\r') }
   catch { discoveryError.value = 'Input outcome is unconfirmed. It was not resent.'; await controller.disconnect() }
 }
-onMounted(refreshTargets)
-onBeforeUnmount(() => { disposed = true; removeOutput(); removeExit(); controller.dispose() })
+
+onMounted(() => {
+  if (terminalElement.value) {
+    terminal = new XTerm({
+      cursorBlink: true,
+      fontFamily: 'Consolas, monospace',
+      fontSize: 14,
+      scrollback: 1000,
+      theme: {
+        background: '#101820',
+        foreground: '#d3e0e8',
+        cursor: '#ffffff',
+      },
+    })
+
+    fitAddon = new FitAddon()
+
+    terminal.loadAddon(fitAddon)
+    terminal.open(terminalElement.value)
+    resizeSubscription = terminal.onResize(({ cols, rows }) => {
+      void synchronizeSize(cols, rows)
+    })
+    fitAddon.fit()
+    resizeObserver = new ResizeObserver(() => {
+      if (!disposed) fitAddon?.fit()
+    })
+    resizeObserver.observe(terminalElement.value)
+
+    keyboardSubscription = terminal.onData((data) => {
+      if (disposed || !isConnected.value) return
+
+      const session = controller.activeSession.value
+      if (!session) return
+
+      // Send exactly once. Never automatically replay
+      // terminal input after a transport failure.
+      void session.write(data).catch(async () => {
+        if (disposed) return
+
+        discoveryError.value =
+          'Input outcome is unconfirmed. It was not resent.'
+
+        await controller.disconnect()
+      })
+    })
+
+  }
+
+  void refreshTargets()
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+
+  // Stop receiving terminal events.
+  removeOutput()
+  removeExit()
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  resizeSubscription?.dispose()
+  resizeSubscription = null
+
+  // Disconnect the M21 session.
+  controller.dispose()
+
+  // Release keyboard subscription.
+  keyboardSubscription?.dispose()
+  keyboardSubscription = null
+
+  // Release xterm.js and its addons.
+  terminal?.dispose()
+  terminal = null
+  fitAddon = null
+})
 
 const statusLabel = computed(() => {
   switch (status.value) {
@@ -130,7 +242,7 @@ const canConnect = computed(
           <p>3mm Terminal v1.0</p>
           <p>Target: {{ selectedTarget?.label ?? 'None' }}</p>
           <p v-if="!isConnected">An approved M20 binding, current user permission and connected provider are required.</p>
-          <p>Plain-text transport preview. Full terminal emulation is not included.</p>
+          <p>Test sessions use a restricted temporary workspace. Core administration and root access are not enabled.</p>
 
           <p v-if="discoveryError" class="terminal-error" role="alert">{{ discoveryError }}</p>
 
@@ -138,7 +250,12 @@ const canConnect = computed(
             {{ error }}
           </p>
         </div>
-        <pre class="terminal-output" aria-label="Session output">{{ output }}</pre>
+        <div
+          ref="terminalElement"
+          class="terminal-output"
+          role="region"
+          aria-label="Terminal output"
+        ></div>
         <form class="terminal-input" @submit.prevent="sendInput">
           <label for="terminal-input">Session input</label>
           <textarea id="terminal-input" v-model="input" rows="2" :disabled="!isConnected" autocomplete="off" spellcheck="false" maxlength="4096"></textarea>
@@ -148,6 +265,8 @@ const canConnect = computed(
     </section>
   </main>
 </template>
+
+<style src="./vendor/xterm-vendor.css"></style>
 
 <style scoped>
 .terminal-page {
@@ -217,6 +336,15 @@ const canConnect = computed(
 .terminal-toolbar button {
   padding: 0.4rem 0.9rem;
 }
+.terminal-toolbar button, .terminal-toolbar select, .terminal-input button {
+  font: inherit;
+  color: var(--ui-text, var(--text-color, #d3e0e8));
+  background: var(--ui-surface-alt, var(--card-bg, #202933));
+  border: 1px solid var(--ui-border, var(--border-color, #748b9d));
+  border-radius: var(--ui-radius-sm, 6px);
+  padding: .45rem .75rem;
+}
+.terminal-toolbar button:disabled, .terminal-input button:disabled { opacity: .5; cursor: default; }
 
 .terminal-screen {
   flex: 1;
@@ -234,7 +362,7 @@ const canConnect = computed(
 .terminal-error {
   color: #e57373;
 }
-.terminal-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; color: inherit; }
+.terminal-output { width: 100%; height: 420px; min-height: 260px; overflow: hidden; }
 .terminal-input { display: grid; gap: .5rem; }
 .terminal-input textarea { min-width: 0; width: 100%; color: inherit; background: transparent; font: inherit; }
 .terminal-input button { justify-self: start; }
